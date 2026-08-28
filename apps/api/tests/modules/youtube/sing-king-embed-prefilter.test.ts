@@ -38,7 +38,7 @@ function allNonEmbeddable(
  * one search page filtered to zero rows does not auto-fetch the next Innertube page on the server.
  */
 const prefilterOn = { VKARA_EMBED_PREFILTER_AT_LIST: 'true' };
-const prefilterOff = {};
+const prefilterOff = { VKARA_EMBED_PREFILTER_AT_LIST: 'false' };
 
 describe('Sing King search embed prefilter', () => {
     it('returns an empty list when every Sing King row is cached as non-embeddable', async () => {
@@ -69,7 +69,7 @@ describe('Sing King search embed prefilter', () => {
         expect(filtered[0]?.id).toBe(page[2]?.id);
     });
 
-    it('does not filter when prefilter flag is off (current default)', async () => {
+    it('does not filter when prefilter flag is explicitly off', async () => {
         const page = buildSingKingStyleSearchPage(8);
         const redis = redisWithEmbeddability(allNonEmbeddable(page));
 

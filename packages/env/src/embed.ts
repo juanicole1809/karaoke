@@ -32,9 +32,9 @@ export function embedEnv() {
     });
 }
 
-/** When enabled, search/related/playlist preview omit non-embeddable videos. Default: off. */
+/** When enabled, search/related/playlist preview omit non-embeddable videos. Default: on. */
 export function isEmbedPrefilterAtListEnabled(embed: EmbedEnvValues): boolean {
-    return parseEnvFlagValue(embed.VKARA_EMBED_PREFILTER_AT_LIST, false);
+    return parseEnvFlagValue(embed.VKARA_EMBED_PREFILTER_AT_LIST, true);
 }
 
 export function getEmbedCacheTtlSeconds(embed: EmbedEnvValues): number {

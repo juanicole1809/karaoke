@@ -7,8 +7,8 @@ import {
 } from '../src/embed';
 
 describe('embed env helpers', () => {
-    it('prefilter flag is off when unset', () => {
-        expect(isEmbedPrefilterAtListEnabled({})).toBe(false);
+    it('prefilter flag is on by default (unset)', () => {
+        expect(isEmbedPrefilterAtListEnabled({})).toBe(true);
     });
 
     it('prefilter flag uses shared boolean format', () => {
