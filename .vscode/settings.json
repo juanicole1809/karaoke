@@ -1,0 +1,21 @@
+{
+    "biome.enabled": false,
+    "cSpell.words": [
+        "DOCKERHUB",
+        "Elysia",
+        "hdel",
+        "hgetall",
+        "hset",
+        "msfullscreenchange",
+        "playnext",
+        "qrcode",
+        "screenfull",
+        "shadcn",
+        "supervisord",
+        "vkara",
+        "Youtubei"
+    ],
+    "typescript.tsdk": "node_modules/typescript/lib",
+    "typescript.enablePromptUseWorkspaceTsdk": true,
+    "js/ts.tsdk.path": "node_modules/typescript/lib"
+}

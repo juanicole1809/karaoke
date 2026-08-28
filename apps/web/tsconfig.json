@@ -1,0 +1,46 @@
+{
+    "compilerOptions": {
+        "target": "ES2017",
+        "lib": ["dom", "dom.iterable", "esnext"],
+        "allowJs": true,
+        "skipLibCheck": true,
+        "strict": true,
+        "noEmit": true,
+        "esModuleInterop": true,
+        "module": "esnext",
+        "moduleResolution": "bundler",
+        "resolveJsonModule": true,
+        "isolatedModules": true,
+        "jsx": "preserve",
+        "incremental": true,
+        "plugins": [
+            {
+                "name": "next"
+            }
+        ],
+        "paths": {
+            "@/*": ["./src/*"],
+            "@vkara/curated-playlists": ["../../packages/curated-playlists/src/index.ts"],
+            "@vkara/env": ["../../packages/env/src/index.ts"],
+            "@vkara/env/*": ["../../packages/env/src/*"],
+            "@vkara/personalization": ["../../packages/personalization/src/index.ts"],
+            "@vkara/personalization/*": ["../../packages/personalization/src/*"],
+            "@vkara/room": ["../../packages/room/src/index.ts"],
+            "@vkara/room/*": ["../../packages/room/src/*"],
+            "@vkara/room/test-fixtures": ["../../packages/room/src/test-fixtures.ts"],
+            "@vkara/validators": ["../../packages/validators/src/index.ts"],
+            "@vkara/validators/*": ["../../packages/validators/src/*"],
+            "@vkara/youtube": ["../../packages/youtube/src/index.ts"],
+            "@vkara/youtube/*": ["../../packages/youtube/src/*"]
+        },
+        "types": ["@types/youtube"]
+    },
+    "include": [
+        "next-env.d.ts",
+        "src/**/*.ts",
+        "src/**/*.tsx",
+        "tests/**/*.ts",
+        ".next/types/**/*.ts"
+    ],
+    "exclude": ["node_modules"]
+}

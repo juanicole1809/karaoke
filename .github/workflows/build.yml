@@ -1,0 +1,42 @@
+name: build-aio-amd64
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/juanicole1809/karaoke-aio
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/aio/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:latest
+          cache-from: type=gha,scope=karaoke-aio
+          cache-to: type=gha,mode=max,scope=karaoke-aio
+
+      - name: Make package public (MIT code, simple pulls on the VPS)
+        run: |
+          curl -fsS -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/user/packages/container/karaoke-aio" \
+            -d '{"visibility":"public"}' || echo "visibility update skipped"

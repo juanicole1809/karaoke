@@ -1,0 +1,30 @@
+# Producción: karaoke aio + Cloudflare
+# Uso:
+#   cp deploy/.env.prod.example deploy/.env.prod   # completar PUBLIC_APP_URL + puerto
+#   docker compose -f deploy/docker-compose.prod.yml up -d --build
+#
+# Opción recomendada: Cloudflare Tunnel (sin abrir puertos).
+#   sudo cloudflared service install <TOKEN>   # public hostname -> http://localhost:8080
+
+services:
+    karaoke_aio:
+        container_name: karaoke-aio
+        hostname: karaoke-aio
+        build:
+            context: ..
+            dockerfile: ../containers/aio/Dockerfile
+        image: karaoke-aio:prod
+        env_file:
+            - path: ./.env.prod
+              required: false
+        ports:
+            # HTTP público (para DNS proxied con Cloudflare en modo Full).
+            # Si usás Cloudflare Tunnel, podés borrar esta sección.
+            - "${PUBLIC_PORT:-8080}:3000"
+        restart: unless-stopped
+        healthcheck:
+            test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/health']
+            interval: 30s
+            timeout: 5s
+            retries: 3
+            start_period: 20s

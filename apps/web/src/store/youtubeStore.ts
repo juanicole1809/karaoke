@@ -1,0 +1,661 @@
+import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import { type YouTubeVideo } from '@vkara/youtube';
+import {
+    ErrorCode,
+    normalizePersistedRoom,
+    needsPlaybackSeekCorrection,
+    isRedundantPlaybackTimeStoreUpdate,
+    type Room,
+    type ServerMessage,
+} from '@vkara/room';
+import { createMigratingPersistStorage } from '@/lib/persisted-storage';
+import { useCuratedStore } from '@/store/curatedStore';
+import { toast } from '@/hooks/use-toast';
+import type { useScopedI18n } from '@/locales/client';
+import { cancelPendingQueueAdd, confirmPendingQueueAdd } from '@/lib/queue-action-feedback';
+import {
+    applyPlaybackIntent,
+    applyPlaybackSeek,
+    applyPlaybackVolume,
+    bootstrapActivePlayback,
+    isTikTokPlayback,
+    syncTikTokPhotoIndex,
+} from '@/lib/active-playback';
+import {
+    clearPlaybackBroadcastSuppression,
+    markServerPlaybackCommand,
+    markPlaybackTrackChange,
+    shouldApplyRemoteCurrentTime,
+} from '@/lib/youtube-playback-sync';
+import { getTikTokSeekBaseSeconds } from '@/lib/tiktok-playback-sync';
+import { shouldApplyRemoteVolumeChange } from '@/lib/remote-gesture-sync';
+import { useRoomSettingsStore } from '@/store/roomSettingsStore';
+import { useRoomRejoinSecretStore } from '@/store/roomRejoinSecretStore';
+import { clearStaleRoomSession } from '@/lib/room-session-lifecycle';
+
+export type TvLobbyBanner = {
+    title: string;
+    description: string;
+};
+
+const setTvLobbyBanner = (banner: TvLobbyBanner | null) =>
+    useYouTubeStore.setState({ tvLobbyBanner: banner });
+
+function showJoinFailure(
+    isTvLayout: boolean,
+    toastId: string,
+    title: string,
+    description: string,
+): void {
+    if (isTvLayout) {
+        setTvLobbyBanner({ title, description });
+        return;
+    }
+    toast({
+        id: toastId,
+        title,
+        description,
+        variant: 'error',
+    });
+}
+
+export type YouTubeStoreLayoutMode = 'both' | 'remote' | 'player';
+export type LayoutModeSource = 'auto' | 'url' | 'user';
+
+interface YouTubeState {
+    wsId: string | null;
+    player: YT.Player | null;
+    volume: number;
+    currentTab: string;
+    room: Omit<Room, 'clients'> | null;
+    isLoading: boolean;
+    error: string | null;
+    layoutMode: YouTubeStoreLayoutMode;
+    layoutModeSource: LayoutModeSource;
+    /** When true, TV mode skips auto createRoom and shows the lobby instead. */
+    tvSuppressAutoCreate: boolean;
+    /** Non-toast join error banner shown on the TV lobby. */
+    tvLobbyBanner: TvLobbyBanner | null;
+
+    setWsId: (wsId: string | null) => void;
+    setPlayer: (player: YT.Player | null) => void;
+    setVolume: (volume: number) => void;
+    setCurrentTab: (currentTab: string) => void;
+    setRoom: (room: Omit<Room, 'clients'> | null) => void;
+    setIsLoading: (isLoading: boolean) => void;
+    setError: (error: string | null) => void;
+    setLayoutMode: (mode: YouTubeStoreLayoutMode, source?: LayoutModeSource) => void;
+    enableAutoLayoutMode: () => void;
+    applyAutoLayoutMode: (suggested: YouTubeStoreLayoutMode) => void;
+    enterTvLobby: () => void;
+
+    addVideo: (video: YouTubeVideo) => void;
+    removeVideo: (videoId: string) => void;
+    playNow: (video: YouTubeVideo) => void;
+    nextVideo: () => void;
+    setIsPlaying: (isPlaying: boolean) => void;
+    handleServerMessage: (
+        message: ServerMessage,
+        t: ReturnType<typeof useScopedI18n>,
+        options?: { isTvLayout?: boolean },
+    ) => void;
+}
+
+export const useYouTubeStore = create(
+    persist<YouTubeState>(
+        (set) => ({
+            wsId: null,
+            player: null,
+            volume: 100,
+            currentTab: 'search',
+            room: null,
+            isLoading: false,
+            error: null,
+            layoutMode: 'remote',
+            layoutModeSource: 'auto',
+            tvSuppressAutoCreate: false,
+            tvLobbyBanner: null,
+
+            setWsId: (wsId) => set({ wsId }),
+            setPlayer: (player) => set({ player }),
+            setVolume: (volume) => set({ volume }),
+            setCurrentTab: (currentTab) => {
+                set({ currentTab });
+                const curated = useCuratedStore.getState();
+                curated.setImportPlaylistPanelOpen(false);
+                curated.closeCuratedPreview({ restoreReturnTo: false });
+            },
+            setRoom: (room) =>
+                set({
+                    room: room ? normalizePersistedRoom(room) : null,
+                    ...(room ? {} : { player: null }),
+                }),
+            setIsLoading: (isLoading) => set({ isLoading }),
+            setError: (error) => set({ error }),
+            setLayoutMode: (layoutMode, source = 'user') => {
+                if (layoutMode === 'remote') {
+                    return set({ layoutMode: 'remote', layoutModeSource: source, player: null });
+                }
+                return set({ layoutMode, layoutModeSource: source });
+            },
+            enableAutoLayoutMode: () => set({ layoutModeSource: 'auto' }),
+            applyAutoLayoutMode: (suggested) =>
+                set((state) => {
+                    if (state.layoutModeSource !== 'auto') {
+                        return state;
+                    }
+                    if (suggested === 'remote') {
+                        return { layoutMode: 'remote', player: null };
+                    }
+                    return { layoutMode: suggested };
+                }),
+            enterTvLobby: () => set({ room: null, player: null, tvSuppressAutoCreate: true }),
+
+            addVideo: (video) =>
+                set((state) => ({
+                    room: state.room
+                        ? {
+                              ...state.room,
+                              videoQueue: [...state.room.videoQueue, video],
+                          }
+                        : null,
+                })),
+
+            removeVideo: (videoId) =>
+                set((state) => ({
+                    room: state.room
+                        ? {
+                              ...state.room,
+                              videoQueue: state.room.videoQueue.filter((v) => v.id !== videoId),
+                          }
+                        : null,
+                })),
+
+            playNow: (video) =>
+                set((state) => ({
+                    room: state.room
+                        ? {
+                              ...state.room,
+                              playingNow: video,
+                              isPlaying: true,
+                              currentTime: 0,
+                              videoQueue: state.room.videoQueue.filter((v) => v.id !== video.id),
+                              historyQueue: state.room.playingNow
+                                  ? [state.room.playingNow, ...state.room.historyQueue]
+                                  : state.room.historyQueue,
+                          }
+                        : null,
+                })),
+
+            nextVideo: () =>
+                set((state) => {
+                    if (!state.room) return { room: null };
+                    const nextVideo = state.room.videoQueue[0];
+                    return {
+                        room: {
+                            ...state.room,
+                            playingNow: nextVideo || null,
+                            isPlaying: Boolean(nextVideo),
+                            currentTime: 0,
+                            videoQueue: state.room.videoQueue.slice(1),
+                            historyQueue: state.room.playingNow
+                                ? [state.room.playingNow, ...state.room.historyQueue]
+                                : state.room.historyQueue,
+                        },
+                    };
+                }),
+
+            setIsPlaying: (isPlaying) =>
+                set((state) => ({
+                    room: state.room ? { ...state.room, isPlaying } : null,
+                })),
+
+            handleServerMessage: (message, t, options) => {
+                const isTvLayout = options?.isTvLayout ?? false;
+
+                switch (message.type) {
+                    case 'roomJoined': {
+                        const joinedRoom = normalizePersistedRoom(message.room);
+                        const roomVolume = Math.min(100, Math.max(0, joinedRoom?.volume ?? 100));
+                        if (joinedRoom?.id) {
+                            useRoomRejoinSecretStore.getState().commitPassword(joinedRoom.id);
+                        }
+                        useRoomSettingsStore.getState().resetJoinFormState();
+                        setTvLobbyBanner(null);
+                        set((state) => {
+                            bootstrapActivePlayback({
+                                video: joinedRoom?.playingNow,
+                                youtubePlayer: state?.player ?? null,
+                                roomVolume,
+                                roomIsPlaying: joinedRoom?.isPlaying ?? false,
+                            });
+                            return {
+                                room: joinedRoom,
+                                wsId: message.yourId,
+                                volume: roomVolume,
+                            };
+                        });
+                        break;
+                    }
+                    case 'roomUpdate':
+                        set((state) => {
+                            const updatedRoom = normalizePersistedRoom(message.room);
+                            if (!state.room || !updatedRoom || state.room.id !== updatedRoom.id) {
+                                return state;
+                            }
+                            const prevPlayingId = state.room?.playingNow?.id ?? null;
+                            const nextPlayingId = updatedRoom?.playingNow?.id ?? null;
+                            const prevPlaying = state.room?.isPlaying;
+                            const nextPlaying = updatedRoom?.isPlaying;
+                            if (prevPlayingId !== nextPlayingId) {
+                                markPlaybackTrackChange();
+                            }
+                            const updatedPlaying = updatedRoom?.playingNow;
+                            if (
+                                updatedPlaying &&
+                                prevPlayingId === nextPlayingId &&
+                                prevPlaying !== nextPlaying
+                            ) {
+                                applyPlaybackIntent({
+                                    video: updatedPlaying,
+                                    youtubePlayer: state.player,
+                                    isPlaying: nextPlaying ?? false,
+                                });
+                            }
+                            confirmPendingQueueAdd(state.room, updatedRoom);
+                            return { room: updatedRoom };
+                        });
+                        break;
+                    case 'leftRoom':
+                        set((state) => {
+                            if (state.room?.id) {
+                                useRoomRejoinSecretStore.getState().forgetPassword(state.room.id);
+                            }
+                            return {
+                                room: null,
+                                player: null,
+                                tvSuppressAutoCreate:
+                                    state.tvSuppressAutoCreate || Boolean(options?.isTvLayout),
+                            };
+                        });
+                        break;
+                    case 'roomClosed':
+                        set((state) => {
+                            if (state.room?.id) {
+                                useRoomRejoinSecretStore.getState().forgetPassword(state.room.id);
+                            }
+                            return {
+                                room: null,
+                                player: null,
+                                tvSuppressAutoCreate:
+                                    state.tvSuppressAutoCreate || Boolean(options?.isTvLayout),
+                            };
+                        });
+                        if (!isTvLayout) {
+                            toast({
+                                id: 'room-closed',
+                                title: t('roomClosed'),
+                                description: t('roomClosedDescription'),
+                                variant: 'error',
+                            });
+                        }
+                        break;
+                    case 'kicked':
+                        set((state) => {
+                            if (state.room?.id) {
+                                useRoomRejoinSecretStore.getState().forgetPassword(state.room.id);
+                            }
+                            return {
+                                room: null,
+                                player: null,
+                                tvSuppressAutoCreate:
+                                    state.tvSuppressAutoCreate || Boolean(options?.isTvLayout),
+                            };
+                        });
+                        showJoinFailure(
+                            isTvLayout,
+                            'room-kicked',
+                            t('kicked'),
+                            t('kickedDescription'),
+                        );
+                        break;
+                    case 'roomNotFound':
+                        clearStaleRoomSession({
+                            isTvLayout,
+                            roomId: useYouTubeStore.getState().room?.id,
+                        });
+                        showJoinFailure(
+                            isTvLayout,
+                            'room-not-found',
+                            t('roomNotFound'),
+                            t('roomNotFoundDescription'),
+                        );
+                        break;
+                    case 'currentTimeChanged':
+                        {
+                            set((state) => {
+                                const roomTime = state.room?.currentTime ?? 0;
+                                const activeVideoId = state.room?.playingNow?.id ?? null;
+                                const context = {
+                                    videoId: message.videoId,
+                                    activeVideoId,
+                                };
+                                if (
+                                    !shouldApplyRemoteCurrentTime(
+                                        message.currentTime,
+                                        roomTime,
+                                        context,
+                                    )
+                                ) {
+                                    if (
+                                        context.videoId != null &&
+                                        activeVideoId != null &&
+                                        context.videoId !== activeVideoId
+                                    ) {
+                                        clearPlaybackBroadcastSuppression();
+                                    }
+                                    return state;
+                                }
+
+                                const playing = state.room?.playingNow;
+                                let needsSeek = false;
+                                if (playing) {
+                                    const seekBase = isTikTokPlayback({ video: playing })
+                                        ? getTikTokSeekBaseSeconds(state.room?.isPlaying ?? false)
+                                        : (state.player?.getCurrentTime() ?? roomTime);
+                                    needsSeek =
+                                        needsPlaybackSeekCorrection(
+                                            seekBase,
+                                            message.currentTime,
+                                        ) &&
+                                        (isTikTokPlayback({ video: playing }) || Boolean(state.player));
+                                    if (needsSeek) {
+                                        markServerPlaybackCommand();
+                                        applyPlaybackSeek({
+                                            video: playing,
+                                            youtubePlayer: state.player,
+                                            seconds: message.currentTime,
+                                        });
+                                    }
+                                }
+
+                                if (
+                                    isTvLayout &&
+                                    isRedundantPlaybackTimeStoreUpdate(
+                                        roomTime,
+                                        message.currentTime,
+                                        needsSeek,
+                                    )
+                                ) {
+                                    clearPlaybackBroadcastSuppression();
+                                    return state;
+                                }
+
+                                clearPlaybackBroadcastSuppression();
+                                return {
+                                    ...state,
+                                    room: state.room
+                                        ? { ...state.room, currentTime: message.currentTime }
+                                        : null,
+                                };
+                            });
+                        }
+                        break;
+                    case 'volumeChanged':
+                        {
+                            const volume = Math.min(100, Math.max(0, message.volume));
+                            if (!shouldApplyRemoteVolumeChange(volume)) {
+                                break;
+                            }
+                            set((state) => {
+                                applyPlaybackVolume({
+                                    video: state.room?.playingNow,
+                                    youtubePlayer: state.player,
+                                    volume,
+                                });
+                                return { ...state, volume };
+                            });
+                        }
+                        break;
+                    case 'replay':
+                        {
+                            clearPlaybackBroadcastSuppression();
+                            set((state) => {
+                                markServerPlaybackCommand();
+                                applyPlaybackSeek({
+                                    video: state.room?.playingNow,
+                                    youtubePlayer: state.player,
+                                    seconds: 0,
+                                });
+                                return {
+                                    ...state,
+                                    room: state.room
+                                        ? {
+                                              ...state.room,
+                                              isPlaying: true,
+                                              currentTime: 0,
+                                          }
+                                        : null,
+                                };
+                            });
+                        }
+                        break;
+                    case 'play':
+                        {
+                            clearPlaybackBroadcastSuppression();
+                            set((state) => {
+                                applyPlaybackIntent({
+                                    video: state.room?.playingNow,
+                                    youtubePlayer: state.player,
+                                    isPlaying: true,
+                                });
+                                return {
+                                    ...state,
+                                    room: state.room ? { ...state.room, isPlaying: true } : null,
+                                };
+                            });
+                        }
+                        break;
+                    case 'pause':
+                        {
+                            clearPlaybackBroadcastSuppression();
+                            set((state) => {
+                                applyPlaybackIntent({
+                                    video: state.room?.playingNow,
+                                    youtubePlayer: state.player,
+                                    isPlaying: false,
+                                });
+                                return {
+                                    ...state,
+                                    room: state.room ? { ...state.room, isPlaying: false } : null,
+                                };
+                            });
+                        }
+                        break;
+                    case 'tiktokPhotoIndexChanged':
+                        {
+                            set((state) => {
+                                const activeVideoId = state.room?.playingNow?.id ?? null;
+                                if (
+                                    message.videoId != null &&
+                                    activeVideoId != null &&
+                                    message.videoId !== activeVideoId
+                                ) {
+                                    return state;
+                                }
+
+                                const playing = state.room?.playingNow;
+                                syncTikTokPhotoIndex({ video: playing, index: message.index });
+
+                                return {
+                                    ...state,
+                                    room: state.room
+                                        ? {
+                                              ...state.room,
+                                              tiktokPhotoIndex: message.index,
+                                              tiktokPhotoMaxIndex: message.maxIndex,
+                                          }
+                                        : null,
+                                };
+                            });
+                        }
+                        break;
+                    case 'errorWithCode':
+                        {
+                            switch (message.code) {
+                                case ErrorCode.ROOM_NOT_FOUND:
+                                    clearStaleRoomSession({
+                                        isTvLayout,
+                                        roomId: useYouTubeStore.getState().room?.id,
+                                    });
+                                    showJoinFailure(
+                                        isTvLayout,
+                                        'room-not-found',
+                                        t('roomNotFound'),
+                                        t('roomNotFoundDescription'),
+                                    );
+                                    break;
+                                case ErrorCode.NOT_IN_ROOM:
+                                    // Auto rejoin in WebSocketProvider — no toast (ConnectionStatusToast when WS is down).
+                                    break;
+                                case ErrorCode.INCORRECT_PASSWORD:
+                                    clearStaleRoomSession({
+                                        isTvLayout,
+                                        roomId: useYouTubeStore.getState().room?.id,
+                                    });
+                                    showJoinFailure(
+                                        isTvLayout,
+                                        'incorrect-password',
+                                        t('incorrectPassword'),
+                                        t('incorrectPasswordDescription'),
+                                    );
+                                    break;
+                                case ErrorCode.ROOM_LOCKED:
+                                    clearStaleRoomSession({
+                                        isTvLayout,
+                                        roomId: useYouTubeStore.getState().room?.id,
+                                    });
+                                    showJoinFailure(
+                                        isTvLayout,
+                                        'room-locked',
+                                        t('roomLocked'),
+                                        t('roomLockedJoinDescription'),
+                                    );
+                                    break;
+                                case ErrorCode.NOT_HOST:
+                                    toast({
+                                        id: 'not-host',
+                                        title: t('notHost'),
+                                        description: t('notHostDescription'),
+                                        variant: 'error',
+                                    });
+                                    break;
+                                case ErrorCode.ALREADY_IN_QUEUE:
+                                    cancelPendingQueueAdd({ dismissVisible: true });
+                                    toast({
+                                        id: 'already-in-queue',
+                                        title: t('alreadyInQueue'),
+                                        description: t('alreadyInQueueDescription'),
+                                        variant: 'warning',
+                                    });
+                                    break;
+                                case ErrorCode.VIDEO_NOT_EMBEDDABLE:
+                                    cancelPendingQueueAdd({ dismissVisible: true });
+                                    toast({
+                                        id: 'video-not-embeddable',
+                                        title: t('videoNotEmbeddable'),
+                                        description: t('videoNotEmbeddableDescription'),
+                                        variant: 'error',
+                                    });
+                                    break;
+                                case ErrorCode.REJOIN_ROOM_NOT_FOUND:
+                                    clearStaleRoomSession({
+                                        isTvLayout,
+                                        roomId: useYouTubeStore.getState().room?.id,
+                                    });
+                                    showJoinFailure(
+                                        isTvLayout,
+                                        'room-not-found',
+                                        t('roomNotFound'),
+                                        t('roomNotFoundDescription'),
+                                    );
+                                    break;
+                                default:
+                                    break;
+                            }
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            },
+        }),
+        {
+            name: 'youtube-storage',
+            version: 2,
+            migrate: (persisted) => persisted as YouTubeState,
+            storage: createJSONStorage(() => createMigratingPersistStorage()),
+            partialize: (state) => {
+                // Persist cold session identity only — never hot room snapshots / currentTime.
+                // Rejoin password lives in roomRejoinSecretStore; legacy password kept for older sessions.
+                const coldRoom = state.room
+                    ? normalizePersistedRoom({
+                          id: state.room.id,
+                          password: state.room.password,
+                          hasPassword: Boolean(state.room.hasPassword ?? state.room.password),
+                      })
+                    : null;
+
+                return {
+                    wsId: state.wsId,
+                    volume: state.volume,
+                    currentTab: state.currentTab,
+                    room: coldRoom,
+                    isLoading: false,
+                    error: null,
+                    // Auto mode is re-derived from viewport on load; still store current value for non-auto.
+                    layoutMode: state.layoutMode,
+                    layoutModeSource: state.layoutModeSource,
+                    tvSuppressAutoCreate: false,
+                    tvLobbyBanner: null,
+                    player: null,
+                } as YouTubeState;
+            },
+            merge: (persistedState, currentState) => {
+                const persisted = persistedState as Partial<YouTubeState>;
+                // Strip hot fields even when loading legacy full-room blobs.
+                const room = persisted.room
+                    ? normalizePersistedRoom({
+                          id: persisted.room.id,
+                          password: persisted.room.password,
+                          hasPassword: persisted.room.hasPassword,
+                      })
+                    : null;
+                const layoutModeSource = persisted.layoutModeSource ?? 'auto';
+                const merged = {
+                    ...currentState,
+                    wsId: persisted.wsId ?? currentState.wsId,
+                    volume: typeof persisted.volume === 'number' ? persisted.volume : currentState.volume,
+                    currentTab: persisted.currentTab ?? currentState.currentTab,
+                    room,
+                    player: null,
+                    layoutModeSource,
+                    tvSuppressAutoCreate: false,
+                    tvLobbyBanner: null,
+                };
+
+                if (layoutModeSource === 'auto') {
+                    return {
+                        ...merged,
+                        layoutMode: currentState.layoutMode,
+                    };
+                }
+                return {
+                    ...merged,
+                    layoutMode: persisted.layoutMode ?? currentState.layoutMode,
+                };
+            },
+        },
+    ),
+);

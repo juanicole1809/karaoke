@@ -1,0 +1,526 @@
+import { useCallback, useEffect, useRef } from 'react';
+
+import { toast } from '@/hooks/use-toast';
+import { useEffectiveLayoutMode } from '@/hooks/use-viewport-layout';
+import { useWaitForRoomSession } from '@/hooks/use-room-session-ready';
+import { registerPendingQueueAdd } from '@/lib/queue-action-feedback';
+import { isCurrentlyPlaying, isVideoInRoom } from '@/lib/room-queue';
+import { toastSessionNotReady } from '@/lib/session-toast';
+import { captureTvRoomSnapshot, recoverTvRoom } from '@/lib/tv-room-recovery';
+import { useI18n, useScopedI18n } from '@/locales/client';
+import { useWebSocket } from '@/providers/websocket-provider';
+import {
+    applyPlaybackIntent,
+    applyPlaybackSeek,
+    applyPlaybackVolume,
+    isTikTokPlayback,
+    readPlaybackPositionSeconds,
+} from '@/lib/active-playback';
+import { clearTikTokBackgroundResumeIntent } from '@/lib/tiktok-room-playback';
+import {
+    getCurrentSeekGeneration,
+    markServerPlaybackCommand,
+    markUserSeekTarget,
+} from '@/lib/youtube-playback-sync';
+import { useYouTubeStore } from '@/store/youtubeStore';
+import { useSingersStore } from '@/store/singersStore';
+import { getTikTokPhotoMaxIndex } from '@vkara/tiktok';
+import type { YouTubeVideo } from '@vkara/youtube';
+
+const ACTION_FEEDBACK_DURATION_MS = 2000;
+
+export type PlayerAction = {
+    handlePlayerPlay: () => void;
+    handlePlayerPause: () => void;
+    handleReplayVideo: () => void;
+    handleSeekToSeconds: (seconds: number) => void;
+    handleSeekRelative: (deltaSeconds: number) => void;
+    handleTikTokPhotoNavigate: (delta: -1 | 1) => void;
+    handlePlayVideoNow: (video: YouTubeVideo) => void;
+    handleAddVideoToQueue: (video: YouTubeVideo) => void;
+    /** Send the queue add with chosen singer names (used by the singers dialog). */
+    commitQueueAdd: (
+        video: YouTubeVideo,
+        options: { moveToTop?: boolean; singers?: string[] },
+    ) => Promise<boolean>;
+    handlePlayNextVideo: () => void;
+    handleRemoveVideoFromQueue: (video: YouTubeVideo) => void;
+    handleSetVideoVolume: (volume: number) => void;
+    handleMoveVideoToTop: (video: YouTubeVideo) => void;
+    handleShuffleQueue: () => void;
+    handleClearQueue: () => void;
+    handleClearHistory: () => void;
+    handleAddVideoAndMoveToTop: (video: YouTubeVideo) => void;
+    handleImportPlaylist: (playlistUrlOrId: string) => void;
+};
+
+const CREATE_ROOM_TIMEOUT_MS = 15000;
+const ACTION_COOLDOWN_MS = 600;
+
+function truncateVideoTitle(title: string, max = 52): string {
+    if (title.length <= max) return title;
+    return `${title.slice(0, max - 1)}…`;
+}
+
+export const usePlayerAction = (): PlayerAction => {
+    const t = useI18n();
+    const tJoinLobby = useScopedI18n('joinLobby');
+    const { ensureConnectedAndSend } = useWebSocket();
+    const roomId = useYouTubeStore((s) => s.room?.id);
+    const playingNowId = useYouTubeStore((s) => s.room?.playingNow?.id);
+    const { effectiveLayoutMode } = useEffectiveLayoutMode();
+    const waitForRoomSession = useWaitForRoomSession();
+    const actionCooldownRef = useRef<Map<string, number>>(new Map());
+    const openSingersPrompt = useSingersStore((state) => state.openSingersPrompt);
+
+    useEffect(() => {
+        actionCooldownRef.current.clear();
+    }, [playingNowId]);
+
+    const isActionCoolingDown = useCallback((key: string) => {
+        const until = actionCooldownRef.current.get(key) ?? 0;
+        return Date.now() < until;
+    }, []);
+
+    const markActionCooldown = useCallback((key: string) => {
+        actionCooldownRef.current.set(key, Date.now() + ACTION_COOLDOWN_MS);
+    }, []);
+
+    const notifySessionNotReady = useCallback(() => {
+        toastSessionNotReady({
+            title: t('toast.sessionNotReady'),
+            description: t('toast.sessionNotReadyDescription'),
+        });
+    }, [t]);
+
+    const createRoomIfNeeded = useCallback(async (): Promise<boolean> => {
+        if (roomId) return true;
+
+        if (effectiveLayoutMode === 'remote') {
+            toast({
+                id: 'join-required',
+                title: tJoinLobby('joinRequiredTitle'),
+                description: tJoinLobby('joinRequiredDescription'),
+                variant: 'error',
+            });
+            return false;
+        }
+
+        const snapshot = captureTvRoomSnapshot(useYouTubeStore.getState().room);
+        recoverTvRoom(ensureConnectedAndSend, snapshot);
+
+        if (useYouTubeStore.getState().room?.id) {
+            return true;
+        }
+
+        try {
+            await Promise.race([
+                new Promise<void>((resolve) => {
+                    const unsubscribe = useYouTubeStore.subscribe((state) => {
+                        if (state.room?.id) {
+                            unsubscribe();
+                            resolve();
+                        }
+                    });
+                }),
+                new Promise<void>((_, reject) => {
+                    setTimeout(
+                        () => reject(new Error('createRoomTimeout')),
+                        CREATE_ROOM_TIMEOUT_MS,
+                    );
+                }),
+            ]);
+            return true;
+        } catch {
+            notifySessionNotReady();
+            return false;
+        }
+    }, [roomId, effectiveLayoutMode, ensureConnectedAndSend, tJoinLobby, notifySessionNotReady]);
+
+    const ensureRoomReady = useCallback(async (): Promise<boolean> => {
+        if (roomId) {
+            if (!(await waitForRoomSession())) {
+                notifySessionNotReady();
+                return false;
+            }
+            return true;
+        }
+
+        return createRoomIfNeeded();
+    }, [roomId, waitForRoomSession, createRoomIfNeeded, notifySessionNotReady]);
+
+    const handlePlayVideoNow = useCallback(
+        async (video: YouTubeVideo) => {
+            if (!(await ensureRoomReady())) return;
+
+            const currentRoom = useYouTubeStore.getState().room;
+            if (isCurrentlyPlaying(currentRoom, video.id)) {
+                ensureConnectedAndSend({ type: 'replay' });
+                toast({
+                    title: t('toast.playNowHandler'),
+                    description: truncateVideoTitle(video.title),
+                    variant: 'info',
+                    duration: ACTION_FEEDBACK_DURATION_MS,
+                });
+                return;
+            }
+
+            ensureConnectedAndSend({ type: 'playNow', video });
+            toast({
+                title: t('toast.playNowHandler'),
+                description: truncateVideoTitle(video.title),
+                variant: 'info',
+                duration: ACTION_FEEDBACK_DURATION_MS,
+            });
+        },
+        [ensureConnectedAndSend, ensureRoomReady, t],
+    );
+
+    const handleAddVideoToQueue = useCallback(
+        (video: YouTubeVideo) => {
+            openSingersPrompt(video, 'queue');
+        },
+        [openSingersPrompt],
+    );
+
+    /**
+     * Actual queue add, called by the singers dialog with the chosen names.
+     * Returns true when the video was sent.
+     */
+    const commitQueueAdd = useCallback(
+        async (video: YouTubeVideo, options: { moveToTop?: boolean; singers?: string[] }) => {
+            const cooldownKey = `add${options.moveToTop ? '-top' : ''}:${video.id}`;
+            if (isActionCoolingDown(cooldownKey)) return false;
+            if (!(await ensureRoomReady())) return false;
+
+            const currentRoom = useYouTubeStore.getState().room;
+            if (isVideoInRoom(currentRoom, video.id)) {
+                toast({
+                    title: t('toast.alreadyInQueue'),
+                    description: t('toast.alreadyInQueueDescription'),
+                    variant: 'warning',
+                });
+                return false;
+            }
+
+            const singers = options.singers?.filter((name) => name.trim().length > 0);
+            const payload = singers && singers.length > 0 ? { ...video, singers } : video;
+
+            markActionCooldown(cooldownKey);
+            if (options.moveToTop) {
+                ensureConnectedAndSend({ type: 'addVideoAndMoveToTop', video: payload });
+                toast({
+                    title: t('toast.addVideoAndMoveToTopHandler'),
+                    description: truncateVideoTitle(video.title),
+                    duration: ACTION_FEEDBACK_DURATION_MS,
+                });
+            } else {
+                registerPendingQueueAdd({
+                    videoId: video.id,
+                    title: t('toast.addVideoHandler'),
+                    description: truncateVideoTitle(video.title),
+                    variant: 'success',
+                    duration: ACTION_FEEDBACK_DURATION_MS,
+                });
+                ensureConnectedAndSend({ type: 'addVideo', video: payload });
+            }
+            return true;
+        },
+        [ensureRoomReady, ensureConnectedAndSend, t, isActionCoolingDown, markActionCooldown],
+    );
+
+    const handlePlayNextVideo = useCallback(async () => {
+        if (!(await ensureRoomReady())) return;
+        ensureConnectedAndSend({ type: 'nextVideo' });
+        toast({
+            title: t('toast.nextVideoHandler'),
+            variant: 'info',
+            duration: ACTION_FEEDBACK_DURATION_MS,
+        });
+    }, [ensureRoomReady, ensureConnectedAndSend, t]);
+
+    const handleRemoveVideoFromQueue = useCallback(
+        async (video: YouTubeVideo) => {
+            if (!(await ensureRoomReady())) return;
+            ensureConnectedAndSend({ type: 'removeVideoFromQueue', videoId: video.id });
+            toast({
+                title: t('toast.removeVideoHandler'),
+                description: truncateVideoTitle(video.title),
+                duration: ACTION_FEEDBACK_DURATION_MS,
+            });
+        },
+        [ensureRoomReady, ensureConnectedAndSend, t],
+    );
+
+    const handleSetVideoVolume = useCallback(
+        async (volume: number) => {
+            const clamped = Math.min(100, Math.max(0, volume));
+            const { setVolume, player, room } = useYouTubeStore.getState();
+            setVolume(clamped);
+            applyPlaybackVolume({
+                video: room?.playingNow,
+                youtubePlayer: player,
+                volume: clamped,
+            });
+            if (!(await ensureRoomReady())) return;
+            ensureConnectedAndSend({ type: 'setVolume', volume: clamped });
+        },
+        [ensureRoomReady, ensureConnectedAndSend],
+    );
+
+    const handlePlayerPlay = useCallback(async () => {
+        if (!(await ensureRoomReady())) return;
+        markServerPlaybackCommand();
+        const { room, player, setIsPlaying } = useYouTubeStore.getState();
+        applyPlaybackIntent({
+            video: room?.playingNow,
+            youtubePlayer: player,
+            isPlaying: true,
+        });
+        setIsPlaying(true);
+        ensureConnectedAndSend({ type: 'play' });
+    }, [ensureRoomReady, ensureConnectedAndSend]);
+
+    const handlePlayerPause = useCallback(async () => {
+        if (!(await ensureRoomReady())) return;
+        markServerPlaybackCommand();
+        const { room, player, setIsPlaying } = useYouTubeStore.getState();
+        if (isTikTokPlayback({ video: room?.playingNow })) {
+            clearTikTokBackgroundResumeIntent();
+        }
+        applyPlaybackIntent({
+            video: room?.playingNow,
+            youtubePlayer: player,
+            isPlaying: false,
+        });
+        setIsPlaying(false);
+        ensureConnectedAndSend({ type: 'pause' });
+    }, [ensureRoomReady, ensureConnectedAndSend]);
+
+    const handleReplayVideo = useCallback(async () => {
+        if (!(await ensureRoomReady())) return;
+        const previous = useYouTubeStore.getState().room?.currentTime ?? 0;
+        markUserSeekTarget(0, previous);
+        useYouTubeStore.setState((state) => ({
+            room: state.room ? { ...state.room, currentTime: 0, isPlaying: true } : null,
+        }));
+        const { player, room } = useYouTubeStore.getState();
+        applyPlaybackSeek({
+            video: room?.playingNow,
+            youtubePlayer: player,
+            seconds: 0,
+        });
+        ensureConnectedAndSend({ type: 'replay' });
+    }, [ensureRoomReady, ensureConnectedAndSend]);
+
+    const clampSeekSeconds = useCallback((seconds: number): number | null => {
+        const room = useYouTubeStore.getState().room;
+        if (!room?.playingNow) {
+            return null;
+        }
+
+        const duration = room.playingNow.duration;
+        const clamped =
+            typeof duration === 'number' && duration > 0
+                ? Math.min(duration, Math.max(0, Math.floor(seconds)))
+                : Math.max(0, Math.floor(seconds));
+        return clamped;
+    }, []);
+
+    const getSeekBaseSeconds = useCallback((): number => {
+        const { room, player } = useYouTubeStore.getState();
+        if (!room?.playingNow) {
+            return 0;
+        }
+        return (
+            readPlaybackPositionSeconds({
+                video: room.playingNow,
+                youtubePlayer: player,
+                roomIsPlaying: room.isPlaying ?? false,
+                roomCurrentTime: room.currentTime ?? 0,
+            }) ??
+            room.currentTime ??
+            0
+        );
+    }, []);
+
+    const applyUserSeekLocally = useCallback(
+        (clamped: number): number => {
+            const previous = getSeekBaseSeconds();
+            const generation = markUserSeekTarget(clamped, previous);
+            useYouTubeStore.setState((state) => ({
+                room: state.room ? { ...state.room, currentTime: clamped } : null,
+            }));
+            const { player, room } = useYouTubeStore.getState();
+            applyPlaybackSeek({
+                video: room?.playingNow,
+                youtubePlayer: player,
+                seconds: clamped,
+            });
+            return generation;
+        },
+        [getSeekBaseSeconds],
+    );
+
+    const sendSeekToRoom = useCallback(
+        async (fallbackTime: number, generation: number) => {
+            if (!(await ensureRoomReady())) {
+                return;
+            }
+            if (generation !== getCurrentSeekGeneration()) {
+                return;
+            }
+            const latest = useYouTubeStore.getState().room?.currentTime ?? fallbackTime;
+            ensureConnectedAndSend({ type: 'seek', time: latest });
+        },
+        [ensureRoomReady, ensureConnectedAndSend],
+    );
+
+    const handleSeekToSeconds = useCallback(
+        async (seconds: number) => {
+            const clamped = clampSeekSeconds(seconds);
+            if (clamped === null) {
+                return;
+            }
+
+            const generation = applyUserSeekLocally(clamped);
+            await sendSeekToRoom(clamped, generation);
+        },
+        [applyUserSeekLocally, clampSeekSeconds, sendSeekToRoom],
+    );
+
+    const handleTikTokPhotoNavigate = useCallback(
+        async (delta: -1 | 1) => {
+            if (!(await ensureRoomReady())) {
+                return;
+            }
+
+            const { room } = useYouTubeStore.getState();
+            const playing = room?.playingNow;
+            if (!playing) {
+                return;
+            }
+
+            const current = room.tiktokPhotoIndex ?? 0;
+            const next = current + delta;
+            if (next < 0) {
+                return;
+            }
+
+            const maxIndex = getTikTokPhotoMaxIndex({
+                video: playing,
+                roomMaxIndex: room.tiktokPhotoMaxIndex ?? 0,
+            });
+            if (maxIndex > 0 && next > maxIndex) {
+                return;
+            }
+
+            useYouTubeStore.setState((state) => ({
+                room: state.room ? { ...state.room, tiktokPhotoIndex: next } : null,
+            }));
+
+            ensureConnectedAndSend({
+                type: 'tiktokNavigatePhoto',
+                index: next,
+                videoId: playing.id,
+            });
+        },
+        [ensureRoomReady, ensureConnectedAndSend],
+    );
+
+    const handleSeekRelative = useCallback(
+        (deltaSeconds: number) => {
+            const base = getSeekBaseSeconds();
+            const clamped = clampSeekSeconds(base + deltaSeconds);
+            if (clamped === null) {
+                return;
+            }
+
+            const generation = applyUserSeekLocally(clamped);
+            void sendSeekToRoom(clamped, generation);
+        },
+        [applyUserSeekLocally, clampSeekSeconds, getSeekBaseSeconds, sendSeekToRoom],
+    );
+
+    const handleMoveVideoToTop = useCallback(
+        async (video: YouTubeVideo) => {
+            if (!(await ensureRoomReady())) return;
+            ensureConnectedAndSend({ type: 'moveToTop', videoId: video.id });
+            toast({
+                title: t('toast.moveVideoToTopHandler'),
+                description: truncateVideoTitle(video.title),
+                duration: ACTION_FEEDBACK_DURATION_MS,
+            });
+        },
+        [ensureRoomReady, ensureConnectedAndSend, t],
+    );
+
+    const handleShuffleQueue = useCallback(async () => {
+        if (!(await ensureRoomReady())) return;
+        ensureConnectedAndSend({ type: 'shuffleQueue' });
+        toast({
+            title: t('toast.shuffleQueueHandler'),
+            variant: 'info',
+            duration: ACTION_FEEDBACK_DURATION_MS,
+        });
+    }, [ensureRoomReady, ensureConnectedAndSend, t]);
+
+    const handleClearQueue = useCallback(async () => {
+        if (!(await ensureRoomReady())) return;
+        ensureConnectedAndSend({ type: 'clearQueue' });
+        toast({
+            title: t('toast.clearQueueHandler'),
+            duration: ACTION_FEEDBACK_DURATION_MS,
+        });
+    }, [ensureRoomReady, ensureConnectedAndSend, t]);
+
+    const handleClearHistory = useCallback(async () => {
+        if (!(await ensureRoomReady())) return;
+        ensureConnectedAndSend({ type: 'clearHistory' });
+        toast({
+            title: t('toast.clearHistoryHandler'),
+            duration: ACTION_FEEDBACK_DURATION_MS,
+        });
+    }, [ensureRoomReady, ensureConnectedAndSend, t]);
+
+    const handleAddVideoAndMoveToTop = useCallback(
+        (video: YouTubeVideo) => {
+            openSingersPrompt(video, 'priority');
+        },
+        [openSingersPrompt],
+    );
+
+    const handleImportPlaylist = useCallback(
+        async (playlistUrlOrId: string) => {
+            if (!(await ensureRoomReady())) return;
+            ensureConnectedAndSend({ type: 'importPlaylist', playlistUrlOrId });
+            toast({
+                title: t('toast.importPlaylistHandler'),
+                variant: 'info',
+                duration: ACTION_FEEDBACK_DURATION_MS,
+            });
+        },
+        [ensureRoomReady, ensureConnectedAndSend, t],
+    );
+
+    return {
+        handlePlayerPlay,
+        handlePlayerPause,
+        handleReplayVideo,
+        handleSeekToSeconds,
+        handleSeekRelative,
+        handleTikTokPhotoNavigate,
+        handlePlayVideoNow,
+        handleAddVideoToQueue,
+        commitQueueAdd,
+        handlePlayNextVideo,
+        handleRemoveVideoFromQueue,
+        handleSetVideoVolume,
+        handleMoveVideoToTop,
+        handleShuffleQueue,
+        handleClearQueue,
+        handleClearHistory,
+        handleAddVideoAndMoveToTop,
+        handleImportPlaylist,
+    };
+};

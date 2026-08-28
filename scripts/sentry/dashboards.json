@@ -1,0 +1,615 @@
+{
+  "org": "vkara",
+  "regionApi": "https://us.sentry.io/api/0",
+  "projects": {
+    "vkara-api": 4511749708120064,
+    "vkara-web": 4511749707792384
+  },
+  "dashboards": [
+    {
+      "title": "vkara — Golden Signals",
+      "period": "24h",
+      "projects": [-1],
+      "isFavorited": true,
+      "description": "SRE golden signals (traffic, errors, latency, saturation proxies) across vkara-api + vkara-web. Scan top→bottom: severity first, then shape, then culprits.",
+      "widgets": [
+        {
+          "title": "Errors (24h)",
+          "description": "Total error events — primary health pulse",
+          "displayType": "big_number",
+          "widgetType": "error-events",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 0, "w": 1, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": [],
+              "fieldAliases": [],
+              "conditions": "",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "HTTP volume",
+          "description": "Traffic — transaction span count",
+          "displayType": "big_number",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 1, "y": 0, "w": 2, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": [],
+              "fieldAliases": [],
+              "conditions": "is_transaction:true span.op:http.server",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "Search p95 (ms)",
+          "description": "Latency SLO proxy — POST /search",
+          "displayType": "big_number",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 3, "y": 0, "w": 3, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["p95(span.duration)"],
+              "aggregates": ["p95(span.duration)"],
+              "columns": [],
+              "fieldAliases": [],
+              "conditions": "is_transaction:true transaction:\"POST /search\"",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "Error rate over time",
+          "description": "Shape of failures — spikes vs steady burn",
+          "displayType": "area",
+          "widgetType": "error-events",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 1, "w": 3, "h": 2, "minH": 2 },
+          "limit": 5,
+          "queries": [
+            {
+              "name": "errors",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": ["project"],
+              "fieldAliases": ["", "project"],
+              "conditions": "",
+              "orderby": "-count()"
+            }
+          ]
+        },
+        {
+          "title": "HTTP throughput",
+          "description": "Request volume by project",
+          "displayType": "line",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 3, "y": 1, "w": 3, "h": 2, "minH": 2 },
+          "limit": 5,
+          "queries": [
+            {
+              "name": "requests",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": ["project"],
+              "fieldAliases": ["", "project"],
+              "conditions": "is_transaction:true span.op:http.server",
+              "orderby": "-count()"
+            }
+          ]
+        },
+        {
+          "title": "p95 latency by route",
+          "description": "Slowest endpoints first — latency budget",
+          "displayType": "table",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 3, "w": 3, "h": 3, "minH": 2 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["transaction", "count()", "p50(span.duration)", "p95(span.duration)"],
+              "aggregates": ["count()", "p50(span.duration)", "p95(span.duration)"],
+              "columns": ["transaction"],
+              "fieldAliases": ["Route", "Count", "p50", "p95"],
+              "conditions": "is_transaction:true span.op:http.server !transaction:OPTIONS*",
+              "orderby": "-p95(span.duration)"
+            }
+          ]
+        },
+        {
+          "title": "Top unresolved issues",
+          "description": "What to fix next — frequency × freshness",
+          "displayType": "table",
+          "widgetType": "issue",
+          "interval": "5m",
+          "layout": { "x": 3, "y": 3, "w": 3, "h": 3, "minH": 2 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["issue", "title", "project", "count()", "last_seen()"],
+              "aggregates": [],
+              "columns": [],
+              "fieldAliases": [],
+              "conditions": "is:unresolved",
+              "orderby": "date"
+            }
+          ]
+        },
+        {
+          "title": "Warn + error logs",
+          "description": "Operational noise / early warning (Winston→Sentry)",
+          "displayType": "area",
+          "widgetType": "logs",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 6, "w": 3, "h": 2, "minH": 2 },
+          "limit": 5,
+          "queries": [
+            {
+              "name": "logs",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": ["severity"],
+              "fieldAliases": [],
+              "conditions": "severity:warn OR severity:error OR severity:fatal",
+              "orderby": "-count()"
+            }
+          ]
+        },
+        {
+          "title": "Redis + DB spans",
+          "description": "Saturation proxy — datastore pressure",
+          "displayType": "line",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 3, "y": 6, "w": 3, "h": 2, "minH": 2 },
+          "queries": [
+            {
+              "name": "redis",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": [],
+              "fieldAliases": [],
+              "conditions": "span.op:db.redis* OR span.op:db.redis.connect OR span.description:redis*",
+              "orderby": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "vkara — API Deep Dive",
+      "period": "24h",
+      "projects": [4511749708120064],
+      "isFavorited": true,
+      "description": "Backend-focused: karaoke search path, upstream YouTube/TikTok, Redis, queues, and structured logs.",
+      "widgets": [
+        {
+          "title": "POST /search p95",
+          "displayType": "big_number",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 0, "w": 2, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["p95(span.duration)"],
+              "aggregates": ["p95(span.duration)"],
+              "columns": [],
+              "conditions": "is_transaction:true transaction:\"POST /search\"",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "POST /suggestions p95",
+          "displayType": "big_number",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 2, "y": 0, "w": 2, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["p95(span.duration)"],
+              "aggregates": ["p95(span.duration)"],
+              "columns": [],
+              "conditions": "is_transaction:true transaction:\"POST /suggestions\"",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "API errors",
+          "displayType": "big_number",
+          "widgetType": "error-events",
+          "interval": "5m",
+          "layout": { "x": 4, "y": 0, "w": 2, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": [],
+              "conditions": "",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "Search latency (p50 / p95)",
+          "description": "Core product path — karaoke search",
+          "displayType": "line",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 1, "w": 3, "h": 2, "minH": 2 },
+          "queries": [
+            {
+              "name": "p50",
+              "fields": ["p50(span.duration)"],
+              "aggregates": ["p50(span.duration)"],
+              "columns": [],
+              "conditions": "is_transaction:true transaction:\"POST /search\"",
+              "orderby": ""
+            },
+            {
+              "name": "p95",
+              "fields": ["p95(span.duration)"],
+              "aggregates": ["p95(span.duration)"],
+              "columns": [],
+              "conditions": "is_transaction:true transaction:\"POST /search\"",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "Key routes volume",
+          "displayType": "bar",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 3, "y": 1, "w": 3, "h": 2, "minH": 2 },
+          "limit": 8,
+          "queries": [
+            {
+              "name": "",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": ["transaction"],
+              "conditions": "is_transaction:true span.op:http.server (transaction:\"POST /search\" OR transaction:\"POST /suggestions\" OR transaction:\"POST /related\" OR transaction:\"GET /ws\" OR transaction:\"GET /health\")",
+              "orderby": "-count()"
+            }
+          ]
+        },
+        {
+          "title": "Upstream / queue tagged errors",
+          "description": "area:youtube|tiktok|queue|redis — expected upstream vs real bugs",
+          "displayType": "area",
+          "widgetType": "error-events",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 3, "w": 3, "h": 2, "minH": 2 },
+          "limit": 5,
+          "queries": [
+            {
+              "name": "",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": ["tags[area]"],
+              "conditions": "tags[area]:youtube OR tags[area]:tiktok OR tags[area]:queue OR tags[area]:redis OR tags[area]:ws",
+              "orderby": "-count()"
+            }
+          ]
+        },
+        {
+          "title": "Hourly report + schedule logs",
+          "description": "Cron/job heartbeat via Winston logs",
+          "displayType": "table",
+          "widgetType": "logs",
+          "interval": "5m",
+          "layout": { "x": 3, "y": 3, "w": 3, "h": 2, "minH": 2 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["timestamp", "message", "severity"],
+              "aggregates": [],
+              "columns": [],
+              "conditions": "message:\"*Hourly*\" OR message:\"*Scheduled*\" OR message:\"*Server started*\" OR message:\"*cleanup*\"",
+              "orderby": "-timestamp"
+            }
+          ]
+        },
+        {
+          "title": "Slowest API transactions",
+          "displayType": "table",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 5, "w": 6, "h": 3, "minH": 2 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["transaction", "count()", "avg(span.duration)", "p95(span.duration)", "max(span.duration)"],
+              "aggregates": ["count()", "avg(span.duration)", "p95(span.duration)", "max(span.duration)"],
+              "columns": ["transaction"],
+              "fieldAliases": ["Route", "N", "avg", "p95", "max"],
+              "conditions": "is_transaction:true span.op:http.server",
+              "orderby": "-p95(span.duration)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "vkara — Web Client",
+      "period": "24h",
+      "projects": [4511749707792384],
+      "isFavorited": true,
+      "description": "Next.js frontend ops view: errors → Core Web Vitals → pageload/nav latency → top issues. Scan top row first.",
+      "widgets": [
+        {
+          "title": "Client errors (24h)",
+          "description": "Primary health pulse",
+          "displayType": "big_number",
+          "widgetType": "error-events",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 0, "w": 1, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": [],
+              "conditions": "",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "Users affected",
+          "description": "Unique users hitting errors",
+          "displayType": "big_number",
+          "widgetType": "error-events",
+          "interval": "5m",
+          "layout": { "x": 1, "y": 0, "w": 1, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["count_unique(user)"],
+              "aggregates": ["count_unique(user)"],
+              "columns": [],
+              "conditions": "",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "LCP p75 (ms)",
+          "description": "Largest Contentful Paint — loading",
+          "displayType": "big_number",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 2, "y": 0, "w": 1, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["p75(measurements.lcp)"],
+              "aggregates": ["p75(measurements.lcp)"],
+              "columns": [],
+              "conditions": "span.op:pageload",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "INP p75 (ms)",
+          "description": "Interaction to Next Paint — responsiveness",
+          "displayType": "big_number",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 3, "y": 0, "w": 1, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["p75(measurements.inp)"],
+              "aggregates": ["p75(measurements.inp)"],
+              "columns": [],
+              "conditions": "has:measurements.inp",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "CLS p75",
+          "description": "Cumulative Layout Shift — stability",
+          "displayType": "big_number",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 4, "y": 0, "w": 1, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["p75(measurements.cls)"],
+              "aggregates": ["p75(measurements.cls)"],
+              "columns": [],
+              "conditions": "span.op:pageload",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "Page transactions",
+          "description": "Client traffic volume",
+          "displayType": "big_number",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 5, "y": 0, "w": 1, "h": 1, "minH": 1 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": [],
+              "conditions": "is_transaction:true",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "Client errors over time",
+          "description": "Spikes vs steady burn",
+          "displayType": "area",
+          "widgetType": "error-events",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 1, "w": 3, "h": 2, "minH": 2 },
+          "queries": [
+            {
+              "name": "errors",
+              "fields": ["count()"],
+              "aggregates": ["count()"],
+              "columns": [],
+              "conditions": "",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "Web Vitals over time",
+          "description": "LCP / INP / CLS trends",
+          "displayType": "line",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 3, "y": 1, "w": 3, "h": 2, "minH": 2 },
+          "queries": [
+            {
+              "name": "LCP p75",
+              "fields": ["p75(measurements.lcp)"],
+              "aggregates": ["p75(measurements.lcp)"],
+              "columns": [],
+              "conditions": "span.op:pageload",
+              "orderby": ""
+            },
+            {
+              "name": "INP p75",
+              "fields": ["p75(measurements.inp)"],
+              "aggregates": ["p75(measurements.inp)"],
+              "columns": [],
+              "conditions": "has:measurements.inp",
+              "orderby": ""
+            },
+            {
+              "name": "CLS p75",
+              "fields": ["p75(measurements.cls)"],
+              "aggregates": ["p75(measurements.cls)"],
+              "columns": [],
+              "conditions": "span.op:pageload",
+              "orderby": ""
+            }
+          ]
+        },
+        {
+          "title": "Pageload p95 by route",
+          "description": "Slowest first paints",
+          "displayType": "table",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 3, "w": 3, "h": 3, "minH": 2 },
+          "limit": 10,
+          "queries": [
+            {
+              "name": "",
+              "fields": ["transaction", "p95(span.duration)", "count()"],
+              "aggregates": ["p95(span.duration)", "count()"],
+              "columns": ["transaction"],
+              "conditions": "is_transaction:true span.op:pageload",
+              "orderby": "-p95(span.duration)"
+            }
+          ]
+        },
+        {
+          "title": "Navigation p95 by route",
+          "description": "App Router client transitions",
+          "displayType": "table",
+          "widgetType": "spans",
+          "interval": "5m",
+          "layout": { "x": 3, "y": 3, "w": 3, "h": 3, "minH": 2 },
+          "limit": 10,
+          "queries": [
+            {
+              "name": "",
+              "fields": ["transaction", "p95(span.duration)", "count()"],
+              "aggregates": ["p95(span.duration)", "count()"],
+              "columns": ["transaction"],
+              "conditions": "is_transaction:true span.op:navigation",
+              "orderby": "-p95(span.duration)"
+            }
+          ]
+        },
+        {
+          "title": "Errors by browser",
+          "description": "Where clients break",
+          "displayType": "table",
+          "widgetType": "error-events",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 6, "w": 3, "h": 2, "minH": 2 },
+          "limit": 8,
+          "queries": [
+            {
+              "name": "",
+              "fields": ["browser.name", "count()", "count_unique(user)"],
+              "aggregates": ["count()", "count_unique(user)"],
+              "columns": ["browser.name"],
+              "conditions": "has:browser.name",
+              "orderby": "-count()"
+            }
+          ]
+        },
+        {
+          "title": "Errors by release",
+          "description": "Regressions after deploy",
+          "displayType": "table",
+          "widgetType": "error-events",
+          "interval": "5m",
+          "layout": { "x": 3, "y": 6, "w": 3, "h": 2, "minH": 2 },
+          "limit": 8,
+          "queries": [
+            {
+              "name": "",
+              "fields": ["release", "count()", "count_unique(user)"],
+              "aggregates": ["count()", "count_unique(user)"],
+              "columns": ["release"],
+              "conditions": "has:release",
+              "orderby": "-count()"
+            }
+          ]
+        },
+        {
+          "title": "Top unresolved client issues",
+          "description": "Click through to Replay + stack",
+          "displayType": "table",
+          "widgetType": "issue",
+          "interval": "5m",
+          "layout": { "x": 0, "y": 8, "w": 6, "h": 3, "minH": 2 },
+          "queries": [
+            {
+              "name": "",
+              "fields": ["issue", "title", "culprit", "count()", "user_count()", "last_seen()"],
+              "aggregates": [],
+              "columns": [],
+              "conditions": "is:unresolved",
+              "orderby": "date"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

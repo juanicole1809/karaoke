@@ -1,0 +1,45 @@
+{
+    "name": "@vkara/api",
+    "version": "0.0.1",
+    "scripts": {
+        "dev": "bun run --watch ./src/index.ts",
+        "build": "bun build --compile --minify-whitespace --minify-syntax --target bun --external playwright --external playwright-core --external chromium-bidi --outfile dist/server ./src/index.ts",
+        "lint": "eslint . --max-warnings 0",
+        "lint:fix": "eslint . --fix",
+        "test": "vitest run --config ../../vitest.config.mts --project @vkara/api"
+    },
+    "dependencies": {
+        "@elysiajs/cors": "^1.4.2",
+        "@elysiajs/openapi": "^1.4.2",
+        "@elysiajs/server-timing": "^1.4.1",
+        "@sentry/bun": "^10.66.0",
+        "@sentry/elysia": "^10.66.0",
+        "@t3-oss/env-core": "^0.13.10",
+        "@vkara/cache-redis": "workspace:*",
+        "@vkara/env": "workspace:*",
+        "@vkara/redis": "workspace:*",
+        "@vkara/room": "workspace:*",
+        "@vkara/tiktok": "workspace:*",
+        "@vkara/validators": "workspace:*",
+        "@vkara/youtube": "workspace:*",
+        "bullmq": "^5.34.8",
+        "chalk": "^5.4.1",
+        "elysia": "^1.4.28",
+        "elysia-rate-limit": "^4.6.2",
+        "ioredis": "^5.4.2",
+        "locate-chrome": "^0.1.1",
+        "playwright": "^1.52.0",
+        "winston": "^3.19.0",
+        "winston-transport": "^4.9.0",
+        "youtube-sr": "^4.3.12",
+        "youtubei": "^1.8.16",
+        "zod": "^3.24.0",
+        "zod-to-json-schema": "^3.24.5"
+    },
+    "devDependencies": {
+        "@types/locate-chrome": "^0.1.2",
+        "@types/node-fetch": "^2.6.12",
+        "bun-types": "^1.1.43"
+    },
+    "module": "src/index.js"
+}

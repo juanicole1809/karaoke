@@ -1,0 +1,352 @@
+import { Elysia, status } from 'elysia';
+import {
+    youtubeCheckEmbeddableBodySchema,
+    youtubePlaylistDetailsBodySchema,
+    youtubeRelatedBodySchema,
+    youtubeSearchBodySchema,
+    youtubeSearchSuggestionsBodySchema,
+} from '@vkara/validators/youtube/http';
+import Redis from 'ioredis';
+import { Queue, Worker } from 'bullmq';
+import { type VideoCompact, type SearchResult } from 'youtubei';
+import { fetchSearchSuggestions } from './modules/youtube/fetch-search-suggestions';
+import { createRedisOptions } from '@vkara/redis';
+
+import { env } from './env';
+
+import { recordRelatedRequest, recordSearchRequest } from '@/modules/stats/service-stats';
+import {
+    attachWorkerFailureCapture,
+    captureUnexpected,
+    watchRedisClient,
+    withCronMonitor,
+} from '@/sentry';
+import { createContextLogger } from '@/utils/logger';
+import {
+    cleanupOldInstances,
+    getRedisKey,
+    REDIS_KEY_PREFIXES,
+    relatedInstances,
+    searchInstances,
+    storeContinuation,
+} from './modules/youtube/cache';
+import { checkEmbeddableMany } from './modules/youtube/resolve-embed-playability';
+import { extractRendererMetadata } from './modules/youtube/renderer-metadata';
+import {
+    createRelatedContinuationCache,
+    fetchRelatedContinuationPage,
+} from './modules/youtube/fetch-related-page';
+import {
+    fetchSearchContinuationPage,
+    fetchSearchInitialPage,
+} from './modules/youtube/fetch-search-page';
+import { loadVideoFromNextResponses } from './modules/youtube/load-video-from-next';
+import { resolveRelatedShelf } from './modules/youtube/safe-parse-related';
+import { prepareYoutubeVideos } from './modules/youtube/prepare-youtube-videos';
+import { resolvePlaylistDetails } from './modules/youtube/fetch-playlist-details-cached';
+import { getYoutubeiClient } from './modules/youtube/youtubei-client';
+
+const logger = createContextLogger('Search-Youtubei');
+const youtubeiLogger = createContextLogger('Queue/Youtubei');
+
+const youtubei = getYoutubeiClient();
+
+const YOUTUBEI_CLEANUP_CRON = '*/5 * * * *';
+
+const redisConnectionOptions = createRedisOptions({
+    REDIS_HOST: env.REDIS_HOST,
+    REDIS_PORT: String(env.REDIS_PORT),
+    REDIS_PASSWORD: env.REDIS_PASSWORD,
+});
+const redis = watchRedisClient(new Redis(redisConnectionOptions), 'youtubei');
+
+const cleanupQueue = new Queue('search-instance-cleanup', { connection: redisConnectionOptions });
+
+const worker = new Worker(
+    'search-instance-cleanup',
+    async () =>
+        withCronMonitor(
+            {
+                slug: 'search-instance-cleanup',
+                crontab: YOUTUBEI_CLEANUP_CRON,
+                checkinMarginMinutes: 5,
+                maxRuntimeMinutes: 5,
+            },
+            () => cleanupOldInstances(),
+        ),
+    { connection: redisConnectionOptions },
+);
+
+worker.on('completed', (job) => {
+    youtubeiLogger.debug(`Cleanup job ${job.id} has completed`, { jobId: job.id });
+});
+
+worker.on('failed', (job, error) => {
+    youtubeiLogger.error(`Cleanup job ${job?.id} has failed`, {
+        jobId: job?.id,
+        error: error.message,
+        stack: error.stack,
+    });
+});
+
+attachWorkerFailureCapture(worker, { queue: 'search-instance-cleanup', area: 'youtube' });
+
+const scheduleCleanupYoutubeiInstance = async () => {
+    await cleanupQueue.add(
+        'cleanup',
+        {},
+        {
+            repeat: {
+                pattern: YOUTUBEI_CLEANUP_CRON,
+            },
+        },
+    );
+    youtubeiLogger.info('Scheduled recurring cleanup job');
+};
+
+const collectUniqueNewItems = (
+    items: VideoCompact[],
+    processedVideoIds: Set<string>,
+): VideoCompact[] => {
+    const uniqueItems = items.filter((item) => !processedVideoIds.has(item.id));
+    uniqueItems.forEach((item) => processedVideoIds.add(item.id));
+    return uniqueItems;
+};
+
+export const searchYoutubeiElysia = new Elysia({})
+    .onStart(() => {
+        logger.info('Starting search-youtubei');
+        scheduleCleanupYoutubeiInstance().catch((error) => {
+            youtubeiLogger.error('Failed to schedule youtubei cleanup', { error });
+            captureUnexpected(error, {
+                tags: { area: 'youtube', op: 'schedule', queue: 'search-instance-cleanup' },
+            });
+        });
+    })
+    .state('youtubeiClient', youtubei)
+    .state('redisClient', redis)
+    .state('searchInstances', searchInstances)
+    .state('relatedInstances', relatedInstances)
+    .state('redisKeyPrefixes', REDIS_KEY_PREFIXES)
+    .post(
+        '/search',
+        async ({
+            body: { query, continuation },
+            store: {
+                youtubeiClient,
+                redisClient,
+                searchInstances: stateSearchInstances,
+                redisKeyPrefixes,
+            },
+        }) => {
+            try {
+                let results: SearchResult<'video'> | undefined;
+                let newItems: VideoCompact[] = [];
+                let searchMetadata = extractRendererMetadata(undefined);
+                const processedVideoIds = new Set<string>();
+                const prefix = redisKeyPrefixes.SEARCH;
+                const activeSearchInstances = stateSearchInstances || searchInstances;
+
+                if (continuation) {
+                    recordSearchRequest(query, true);
+                    logger.info(`Continuing search: "${query}"`);
+                    const cachedResult = activeSearchInstances.get(continuation)?.instance;
+
+                    const page = await fetchSearchContinuationPage(
+                        youtubeiClient,
+                        continuation,
+                        cachedResult,
+                    );
+
+                    newItems = collectUniqueNewItems(page.items, processedVideoIds);
+                    searchMetadata = page.metadata;
+                    results = page.searchResult;
+
+                    activeSearchInstances.delete(continuation);
+                    await redisClient.del(getRedisKey(prefix, continuation));
+                } else {
+                    recordSearchRequest(query, false);
+                    logger.info(`New search: "${query}"`);
+                    const page = await fetchSearchInitialPage(youtubeiClient, query);
+                    newItems = collectUniqueNewItems(page.items, processedVideoIds);
+                    searchMetadata = page.metadata;
+                    results = page.searchResult;
+                }
+
+                if (results?.continuation) {
+                    await storeContinuation(
+                        prefix,
+                        results.continuation,
+                        activeSearchInstances,
+                        results,
+                        redisClient,
+                    );
+                }
+
+                const items = await prepareYoutubeVideos(
+                    youtubeiClient,
+                    redisClient,
+                    newItems,
+                    searchMetadata,
+                );
+
+                logger.debug(`Current search instances cache size: ${activeSearchInstances.size}`);
+
+                return {
+                    items,
+                    continuation: results?.continuation,
+                };
+            } catch (error) {
+                logger.error('Failed to search YouTube', { error, query, continuation });
+                captureUnexpected(error, {
+                    tags: { area: 'youtube', route: 'search', kind: 'upstream' },
+                    level: 'warning',
+                    extras: { hasContinuation: Boolean(continuation) },
+                });
+                return status(502, { error: 'youtube_upstream_failed' });
+            }
+        },
+        {
+            body: youtubeSearchBodySchema,
+        },
+    )
+    .post(
+        '/suggestions',
+        async ({ body: { query } }) => {
+            try {
+                return await fetchSearchSuggestions(query);
+            } catch (error) {
+                logger.error('Failed to get search suggestions', { error, query });
+                captureUnexpected(error, {
+                    tags: { area: 'youtube', route: 'suggestions', kind: 'upstream' },
+                    level: 'warning',
+                });
+                return status(502, { error: 'youtube_upstream_failed' });
+            }
+        },
+        {
+            body: youtubeSearchSuggestionsBodySchema,
+        },
+    )
+    .post(
+        '/playlist',
+        async ({ body: { playlistUrlOrId, videoLimit, fetchAll }, store: { redisClient } }) =>
+            resolvePlaylistDetails(redisClient, playlistUrlOrId, {
+                videoLimit,
+                fetchAll,
+            }),
+        {
+            body: youtubePlaylistDetailsBodySchema,
+        },
+    )
+    .post(
+        '/related',
+        async ({
+            body: { videoId, continuation },
+            store: {
+                youtubeiClient,
+                redisClient,
+                relatedInstances: stateRelatedInstances,
+                redisKeyPrefixes,
+            },
+        }) => {
+            try {
+                let results: SearchResult<'video'> | undefined;
+                let newItems: VideoCompact[] = [];
+                let relatedMetadata = extractRendererMetadata(undefined);
+                const processedVideoIds = new Set<string>();
+                const prefix = redisKeyPrefixes.RELATED;
+                const activeRelatedInstances = stateRelatedInstances || relatedInstances;
+
+                if (continuation) {
+                    recordRelatedRequest();
+                    logger.info(`Continuing related videos for: "${videoId}"`);
+                    const cachedShell = activeRelatedInstances.get(continuation)?.instance;
+
+                    const page = await fetchRelatedContinuationPage(youtubeiClient, continuation);
+                    newItems = collectUniqueNewItems(page.items, processedVideoIds);
+                    relatedMetadata = page.metadata;
+
+                    const mergedItems = cachedShell
+                        ? [...(cachedShell.items as VideoCompact[]), ...page.items]
+                        : page.items;
+
+                    results = createRelatedContinuationCache(
+                        youtubeiClient,
+                        mergedItems,
+                        page.continuation,
+                    );
+
+                    activeRelatedInstances.delete(continuation);
+                    await redisClient.del(getRedisKey(prefix, continuation));
+                } else {
+                    recordRelatedRequest();
+                    logger.info(`Getting related videos for: "${videoId}"`);
+                    const { video, nextResponseData } = await loadVideoFromNextResponses(
+                        youtubeiClient,
+                        videoId,
+                    );
+                    relatedMetadata = extractRendererMetadata(nextResponseData);
+
+                    const { items: relatedItems, continuation: relatedContinuation } =
+                        resolveRelatedShelf(video, nextResponseData, youtubeiClient);
+
+                    newItems = collectUniqueNewItems(relatedItems, processedVideoIds);
+                    if (relatedItems.length > 0 || relatedContinuation) {
+                        results = createRelatedContinuationCache(
+                            youtubeiClient,
+                            relatedItems,
+                            relatedContinuation,
+                        );
+                    }
+                }
+
+                if (results?.continuation) {
+                    await storeContinuation(
+                        prefix,
+                        results.continuation,
+                        activeRelatedInstances,
+                        results,
+                        redisClient,
+                    );
+                }
+
+                const items = await prepareYoutubeVideos(
+                    youtubeiClient,
+                    redisClient,
+                    newItems,
+                    relatedMetadata,
+                );
+
+                logger.debug(
+                    `Current related instances cache size: ${activeRelatedInstances.size}`,
+                );
+
+                return {
+                    items,
+                    continuation: results?.continuation,
+                };
+            } catch (error) {
+                logger.error('Failed to get related videos', { error });
+                captureUnexpected(error, {
+                    tags: { area: 'youtube', route: 'related', kind: 'upstream' },
+                    level: 'warning',
+                });
+                return status(502, { error: 'youtube_upstream_failed' });
+            }
+        },
+        {
+            body: youtubeRelatedBodySchema,
+        },
+    )
+    .post(
+        '/check-embeddable',
+        async ({
+            body: { videoIds },
+            store: { redisClient },
+        }): Promise<{ videoId: string; canEmbed: boolean }[]> =>
+            checkEmbeddableMany(redisClient, videoIds),
+        {
+            body: youtubeCheckEmbeddableBodySchema,
+        },
+    );

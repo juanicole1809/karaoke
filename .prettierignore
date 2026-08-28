@@ -1,0 +1,21 @@
+# Build outputs
+**/dist
+**/build
+**/coverage
+**/.next
+**/.turbo
+
+# Package manager and caches
+**/node_modules
+
+# Misc artifacts
+**/*.trace
+**/*.zip
+**/*.tar.gz
+**/*.tgz
+**/*.log
+**/*.bun
+
+# Documentation and OpenSpec (hand-edited prose/specs)
+docs/**
+openspec/**

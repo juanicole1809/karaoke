@@ -1,0 +1,341 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    /**
+     * Remote page horizontal gutter — single source for chrome bands and edge controls.
+     * Shell wrappers apply px-page-gutter once; children use vertical padding / gap only.
+     * See PAGE_GUTTER in lib/remote-chrome.ts
+     */
+    --vkara-page-gutter: 1rem;
+    --vkara-page-gutter-inline-start: max(var(--safe-left), var(--vkara-page-gutter));
+    --vkara-page-gutter-inline-end: max(var(--safe-right), var(--vkara-page-gutter));
+    /** Mobile remote chrome — defaults; synced by RemoteChromeProvider */
+    --vkara-mobile-nav-height: 3.75rem;
+    --vkara-now-playing-height: 0rem;
+    --vkara-toast-gap: 0.5rem;
+    --vkara-toast-top: max(calc(var(--safe-top) + 0.75rem), 0.75rem);
+    --vkara-toast-bottom-base: max(calc(var(--safe-bottom) + 0.75rem), 0.75rem);
+    --vkara-toast-bottom: var(--vkara-toast-bottom-base);
+    /** Nav block height including pb-safe-offset (home indicator) */
+    --vkara-mobile-nav-block: calc(
+        var(--vkara-mobile-nav-height) + max(calc(var(--safe-bottom) + 0.25rem), 0.25rem)
+    );
+    /** Fixed UI above bottom chrome (action popover, etc.) */
+    --vkara-remote-floating-bottom: calc(
+        var(--vkara-mobile-nav-block) + var(--vkara-now-playing-height) + var(--vkara-toast-gap)
+    );
+    /**
+     * Inset for tab / overlay scroll areas above the floating now-playing bar.
+     * Nav height is excluded — flex shell already reserves bottom nav.
+     */
+    --vkara-remote-inset-bottom: 0px;
+}
+
+html[data-vkara-remote-chrome='full'] {
+    --vkara-toast-bottom: calc(var(--vkara-remote-floating-bottom) + 0.25rem);
+}
+
+@keyframes voice-ring-pulse {
+    0% {
+        transform: scale(0.92);
+        opacity: 0.45;
+    }
+    100% {
+        transform: scale(1.55);
+        opacity: 0;
+    }
+}
+
+.voice-ring-pulse {
+    animation: voice-ring-pulse 1.85s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.voice-ring-pulse-delay-1 {
+    animation-delay: 0.45s;
+}
+
+.voice-ring-pulse-delay-2 {
+    animation-delay: 0.9s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .voice-ring-pulse,
+    .voice-ring-pulse-delay-1,
+    .voice-ring-pulse-delay-2 {
+        animation: none;
+        opacity: 0.35;
+        transform: scale(1);
+    }
+}
+
+@keyframes now-playing-eq {
+    0%,
+    100% {
+        transform: scaleY(0.35);
+    }
+    50% {
+        transform: scaleY(1);
+    }
+}
+
+.now-playing-eq-bar {
+    height: 100%;
+    transform-origin: bottom;
+    animation: now-playing-eq 0.72s ease-in-out infinite;
+}
+
+.now-playing-eq-bar-2 {
+    animation-delay: 0.12s;
+}
+
+.now-playing-eq-bar-3 {
+    animation-delay: 0.24s;
+}
+
+@keyframes now-playing-ring-pulse {
+    0%,
+    100% {
+        opacity: 0.45;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.85;
+        transform: scale(1.03);
+    }
+}
+
+.now-playing-ring-pulse {
+    animation: now-playing-ring-pulse 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .now-playing-eq-bar,
+    .now-playing-eq-bar-2,
+    .now-playing-eq-bar-3 {
+        animation: none;
+        transform: scaleY(0.65);
+    }
+
+    .now-playing-ring-pulse {
+        animation: none;
+        opacity: 0.55;
+    }
+}
+
+.connection-status-toast {
+    opacity: 0;
+    transform: translateY(-10px);
+    pointer-events: none;
+    transition:
+        opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+        transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.connection-status-toast[data-visible='true'] {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .connection-status-toast {
+        transition: none;
+    }
+}
+
+@layer utilities {
+    .pt-safe {
+        padding-top: var(--safe-top);
+    }
+    /** Safe area + minimum spacing so controls are not flush to the screen edge */
+    .pt-safe-offset {
+        padding-top: max(calc(var(--safe-top) + 1rem), 1rem);
+    }
+    /** Controls tab — tighter top spacing on short mobile viewports */
+    .pt-safe-offset-controls {
+        padding-top: max(calc(var(--safe-top) + 1rem), 1rem);
+    }
+    @media (max-height: 680px) {
+        .pt-safe-offset-controls {
+            padding-top: max(calc(var(--safe-top) + 0.5rem), 0.5rem);
+        }
+    }
+    .px-page-gutter,
+    .px-safe-offset {
+        padding-left: var(--vkara-page-gutter-inline-start);
+        padding-right: var(--vkara-page-gutter-inline-end);
+    }
+    .pl-page-gutter,
+    .pl-safe-offset {
+        padding-left: var(--vkara-page-gutter-inline-start);
+    }
+    .pr-page-gutter,
+    .pr-safe-offset {
+        padding-right: var(--vkara-page-gutter-inline-end);
+    }
+    .pb-safe-offset {
+        padding-bottom: max(calc(var(--safe-bottom) + 0.25rem), 0.25rem);
+    }
+    .pb-safe-offset-lg {
+        padding-bottom: max(calc(var(--safe-bottom) + 2.5rem), 2.5rem);
+    }
+    .top-safe-offset {
+        top: max(calc(var(--safe-top) + 0.75rem), 0.75rem);
+    }
+    .left-page-gutter,
+    .left-safe-offset {
+        left: var(--vkara-page-gutter-inline-start);
+    }
+    .right-page-gutter,
+    .right-safe-offset {
+        right: var(--vkara-page-gutter-inline-end);
+    }
+    .pl-safe {
+        padding-left: var(--safe-left);
+    }
+    .pr-safe {
+        padding-right: var(--safe-right);
+    }
+    .px-safe {
+        padding-left: var(--safe-left);
+        padding-right: var(--safe-right);
+    }
+    .min-h-dvh-screen {
+        /* vh first: old TV browsers (no dvh support) keep the fallback. */
+        min-height: 100vh;
+        min-height: 100dvh;
+    }
+    .h-dvh-screen {
+        height: 100vh;
+        height: 100dvh;
+    }
+
+    /** Search overlay — keep caret clipped inside the field (iOS fixed modal bug) */
+    .search-overlay-input {
+        -webkit-appearance: none;
+        appearance: none;
+        touch-action: manipulation;
+        caret-color: hsl(var(--foreground));
+        position: relative;
+        z-index: 1;
+    }
+
+    /** TV player QR (corner) — always fully visible over the video */
+    .player-qr-zone {
+        opacity: 1;
+        cursor: none;
+        filter: drop-shadow(0 4px 16px rgb(0 0 0 / 0.55));
+    }
+
+    .player-qr-zone,
+    .player-qr-zone *,
+    .player-qr-zone:hover,
+    .player-qr-zone:hover *,
+    .player-qr-zone:focus-visible,
+    .player-qr-zone:focus-visible * {
+        cursor: none;
+    }
+
+    /** Laptop player settings — dim by default, full opacity on hover */
+    .player-settings-button {
+        opacity: 0.5;
+        transition: opacity 0.3s ease;
+    }
+
+    .player-settings-button:hover,
+    .player-settings-button:focus-visible {
+        opacity: 1;
+    }
+}
+
+body {
+    font-family: Arial, Helvetica, sans-serif;
+
+    /* Remove input number arrows */
+    /* Chrome, Safari, Edge, Opera */
+    input::-webkit-outer-spin-button,
+    input::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+    }
+
+    /* Remove input number arrows */
+    /* Firefox */
+    input[type='number'] {
+        -moz-appearance: textfield;
+    }
+}
+
+@layer base {
+    :root {
+        --background: 0 0% 100%;
+        --foreground: 222.2 84% 4.9%;
+        --card: 0 0% 100%;
+        --card-foreground: 222.2 84% 4.9%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 222.2 84% 4.9%;
+        --primary: 222.2 47.4% 11.2%;
+        --primary-foreground: 210 40% 98%;
+        --secondary: 210 40% 96.1%;
+        --secondary-foreground: 222.2 47.4% 11.2%;
+        --muted: 210 40% 96.1%;
+        --muted-foreground: 215.4 16.3% 46.9%;
+        --accent: 210 40% 96.1%;
+        --accent-foreground: 222.2 47.4% 11.2%;
+        --destructive: 0 84.2% 60.2%;
+        --destructive-foreground: 210 40% 98%;
+        --border: 214.3 31.8% 91.4%;
+        --input: 214.3 31.8% 91.4%;
+        --ring: 222.2 84% 4.9%;
+        --chart-1: 12 76% 61%;
+        --chart-2: 173 58% 39%;
+        --chart-3: 197 37% 24%;
+        --chart-4: 43 74% 66%;
+        --chart-5: 27 87% 67%;
+        --radius: 0.5rem;
+    }
+    .dark {
+        --background: 222.2 84% 4.9%;
+        --foreground: 210 40% 98%;
+        --card: 222.2 84% 4.9%;
+        --card-foreground: 210 40% 98%;
+        --popover: 222.2 84% 4.9%;
+        --popover-foreground: 210 40% 98%;
+        --primary: 210 40% 98%;
+        --primary-foreground: 222.2 47.4% 11.2%;
+        --secondary: 217.2 32.6% 17.5%;
+        --secondary-foreground: 210 40% 98%;
+        --muted: 217.2 32.6% 17.5%;
+        --muted-foreground: 215 20.2% 65.1%;
+        --accent: 217.2 32.6% 17.5%;
+        --accent-foreground: 210 40% 98%;
+        --destructive: 0 62.8% 30.6%;
+        --destructive-foreground: 210 40% 98%;
+        --border: 217.2 32.6% 17.5%;
+        --input: 217.2 32.6% 17.5%;
+        --ring: 212.7 26.8% 83.9%;
+        --chart-1: 220 70% 50%;
+        --chart-2: 160 60% 45%;
+        --chart-3: 30 80% 55%;
+        --chart-4: 280 65% 60%;
+        --chart-5: 340 75% 55%;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    html {
+        height: 100%;
+    }
+    body {
+        @apply bg-background text-foreground min-h-dvh-screen;
+        overscroll-behavior: none;
+    }
+}

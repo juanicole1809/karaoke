@@ -1,0 +1,77 @@
+export type FlagScope = 'api' | 'web' | 'both';
+
+export type FlagDoc = {
+    name: string;
+    default: string | boolean | number;
+    scope: FlagScope;
+    description: string;
+};
+
+/** Boolean `VKARA_*` feature flags — keep in sync with zod schemas and `.env.example`. */
+export const FLAG_DOCS = [
+    {
+        name: 'VKARA_EMBED_PREFILTER_AT_LIST',
+        default: true,
+        scope: 'api',
+        description:
+            'When enabled, filter non-embeddable videos from search/related/playlist preview lists.',
+    },
+    {
+        name: 'VKARA_AIO',
+        default: false,
+        scope: 'web',
+        description: 'All-in-one deploy: skip /vi redirect middleware when set to 1.',
+    },
+    {
+        name: 'VKARA_EXPERIMENTS',
+        default: false,
+        scope: 'both',
+        description:
+            'Enable experimental features (TikTok provider API, Experiments section in Settings).',
+    },
+    {
+        name: 'VKARA_TLS_INSECURE',
+        default: false,
+        scope: 'api',
+        description:
+            'Disable TLS certificate verification for outbound YouTube HTTPS fetches (dev/WSL only).',
+    },
+] as const satisfies readonly FlagDoc[];
+
+/** Non-boolean `VKARA_*` tunables (numeric config) — keep in sync with zod schemas and `.env.example`. */
+export const VKARA_TUNABLE_DOCS = [
+    {
+        name: 'VKARA_EMBED_CACHE_TTL_SECONDS',
+        default: 2_592_000,
+        scope: 'api',
+        description:
+            'Redis TTL (seconds) for youtube-embed:{videoId} playability cache entries (default 30 days).',
+    },
+    {
+        name: 'VKARA_TIKTOK_SEARCH_SESSION_TTL_SECONDS',
+        default: 600,
+        scope: 'api',
+        description: 'TikTok search device session idle TTL in seconds (default 10 minutes).',
+    },
+    {
+        name: 'VKARA_TIKTOK_SEARCH_PAGE_SIZE',
+        default: 12,
+        scope: 'api',
+        description: 'TikTok search items returned per API page.',
+    },
+    {
+        name: 'VKARA_TIKTOK_SEARCH_MAX_DEVICE_SESSIONS',
+        default: 32,
+        scope: 'api',
+        description: 'Maximum concurrent TikTok search sessions (one slot per deviceId).',
+    },
+] as const satisfies readonly FlagDoc[];
+
+/** All documented `VKARA_*` keys (flags + tunables) for env examples and tooling. */
+export const VKARA_ENV_DOCS = [...FLAG_DOCS, ...VKARA_TUNABLE_DOCS] as const;
+
+/** Embed env var names (boolean flag + Redis TTL). Values come from `embedEnv()` / validated `env`. */
+export const VkaraEmbedEnv = {
+    PREFILTER_AT_LIST: 'VKARA_EMBED_PREFILTER_AT_LIST',
+    CACHE_TTL_SECONDS: 'VKARA_EMBED_CACHE_TTL_SECONDS',
+} as const;
