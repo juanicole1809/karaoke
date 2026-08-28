@@ -60,10 +60,8 @@ export const viewport: Viewport = {
     width: 'device-width',
     initialScale: 1,
     viewportFit: 'cover',
-    themeColor: [
-        { media: '(prefers-color-scheme: light)', color: '#fafafa' },
-        { media: '(prefers-color-scheme: dark)', color: '#0a0a0f' },
-    ],
+    // Tema forzado oscuro: el color del chrome del navegador también queda oscuro.
+    themeColor: '#0a0a0f',
 };
 
 export function generateStaticParams() {
@@ -98,10 +96,13 @@ export default async function RootLayout({
                     description={t('seo.description')}
                     siteName={t('seo.siteName')}
                 />
+                {/* Tema forzado a oscuro siempre (karaoke). forcedTheme ignora la
+                    preferencia del sistema y lo guardado en el navegador. */}
                 <ThemeProvider
                     attribute="class"
-                    defaultTheme="system"
-                    enableSystem
+                    defaultTheme="dark"
+                    forcedTheme="dark"
+                    enableSystem={false}
                     disableTransitionOnChange
                 >
                     <I18nProvider locale={appLocale}>
