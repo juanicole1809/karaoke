@@ -22,21 +22,35 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Build and push (linux/amd64)
+      - name: Build (linux/amd64, loaded into docker)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: containers/aio/Dockerfile
           platforms: linux/amd64
-          push: true
-          tags: ${{ env.IMAGE }}:latest
+          load: true
+          tags: karaoke-aio:tmp
           cache-from: type=gha,scope=karaoke-aio
           cache-to: type=gha,mode=max,scope=karaoke-aio
 
-      - name: Make package public (MIT code, simple pulls on the VPS)
+      - name: Push to GHCR
+        run: docker tag karaoke-aio:tmp ${{ env.IMAGE }}:latest && docker push ${{ env.IMAGE }}:latest
+
+      - name: Make package public (best-effort)
         run: |
           curl -fsS -X PATCH \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/user/packages/container/karaoke-aio" \
             -d '{"visibility":"public"}' || echo "visibility update skipped"
+
+      - name: Save image tarball (bzip2)
+        run: |
+          docker save karaoke-aio:tmp | bzip2 -9 > karaoke-aio.tar.bz2
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: karaoke-aio-amd64
+          path: karaoke-aio.tar.bz2
+          retention-days: 7
