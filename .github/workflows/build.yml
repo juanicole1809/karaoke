@@ -1,8 +1,9 @@
 name: build-aio-amd64
 
+# 2026-08-31: el build paso al servidor (vps-hetzner-2, 8GB RAM).
+# Este workflow queda solo como respaldo manual (workflow_dispatch).
+# El deploy normal es: ssh al server -> git pull -> docker compose -f docker-compose.prod.yml up -d --build
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
